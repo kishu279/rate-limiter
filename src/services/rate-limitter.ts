@@ -38,6 +38,9 @@ export default async function rateLimitter(
 
     const currentTime = CurrentTimeInSeconds();
 
+    console.log("IP:", ipAddress);
+    console.log("USER:", user);
+
     // user is null -> new creation of entry
     if (user == null) {
       const data = {
@@ -47,51 +50,48 @@ export default async function rateLimitter(
       await createCache(ipAddress!, data);
 
       res.locals.remaining = data.tokens;
-      res.locals.resetSeconds = data.lastRefill;
+      res.locals.resetSeconds = (capacity - data.tokens) / refillRate;
 
       next();
       return;
     }
 
-    if (user != null) {
-      const tokens = user.tokens;
-      const lastRefill = user.lastRefill;
+    const elapsedTime = currentTime - user.lastRefill;
 
-      if (tokens > 0) {
-        const data = {
-          lastRefill: currentTime,
-          tokens:
-            Math.min(
-              capacity,
-              user.tokens + (currentTime - user.lastRefill) * refillRate,
-            ) - 1,
-        };
-        await createCache(ipAddress!, data);
+    // Calculate newly available tokens
+    const availableTokens = Math.min(
+      capacity,
+      user.tokens + elapsedTime * refillRate,
+    );
 
-        res.locals.remaining = data.tokens;
-        res.locals.resetSeconds = currentTime - lastRefill;
+    console.log("AVAILABLE:", availableTokens);
 
-        next();
-        return;
-      } else if (tokens == 0 && currentTime - lastRefill > 60) {
-        const data = {
-          lastRefill: currentTime,
-          tokens:
-            Math.min(
-              capacity,
-              user.tokens + (currentTime - user.lastRefill) * refillRate,
-            ) - 1,
-        };
-        await createCache(ipAddress!, data);
-
-        res.locals.remaining = data.tokens;
-        res.locals.resetSeconds = currentTime - lastRefill;
-        next();
-        return;
-      } else {
-        throw new AppError(429, "LIMITS_EXCEEDED", "Request limits reached");
-      }
+    // Check whether a token is available
+    if (availableTokens < 1) {
+      throw new AppError(429, "LIMITS_EXCEEDED", "Request limits reached");
     }
+
+    // Consume one token
+    const remainingTokens = availableTokens - 1;
+    console.log("REMAINING:", remainingTokens);
+
+    // Preserve fractional refill progress
+    const consumedRefillTime = Math.min(
+      elapsedTime,
+      (capacity - user.tokens) / refillRate,
+    );
+
+    const data: DataJson = {
+      tokens: remainingTokens,
+      lastRefill: user.lastRefill + consumedRefillTime,
+    };
+
+    await createCache(ipAddress!, data);
+
+    res.locals.remaining = data.tokens;
+    res.locals.resetSeconds = Math.ceil((capacity - data.tokens) / refillRate);
+
+    return next();
   } catch (error) {
     next(error);
   }
